@@ -1,22 +1,13 @@
 "use strict";
 
+const PgError = require( "./PgError" );
+
 module.exports = class{
-  constructor( pool, maxQueries ){
-    this.client = pool;
+  constructor( pool ){
+    this.pool = pool;
+    this.client = null;
     this.state = 0;
     this.count = 0;
-    this.maxQueries = 0;
-
-    if( typeof Number.isInteger( maxQueries ) && maxQueries > 0 )
-      this.maxQueries = maxQueries;
-  }
-
-  async open(){
-    if( this.state > 0 ) return;
-
-    this.client = await this.client.connect();
-    await this.client.query( "begin" );
-    this.state = 1;
   }
 
   async end( mode ){
@@ -27,24 +18,39 @@ module.exports = class{
 
     await this.client.end();
     this.client.release();
+
     this.state = 2;
   }
 
+  async open(){
+    if( this.state > 0 ) return;
+
+    try{
+      this.client = await this.pool.connect();
+      this.state = 1;
+      await this.client.query( "begin" );
+    } catch( e ) {
+      await this.end( false );
+
+      throw new PgError( e );
+    }
+  }
+
   async query( sql, data ){
-    if( this.state === 2 ) throw "Client released";
+    if( this.state === 2 ) throw new Error( "Client released" );
 
     await this.open();
     this.count++;
 
-    const result = await this.client.query( sql, data ).catch( async error => {
+    try{
+      const result = await this.client.query( sql, data );
+
+      return result;
+    } catch( error ) {
       error.queryNumber = this.count;
       await this.end( false );
 
-      throw error;
-    } );
-
-    if( this.count === this.maxQueries ) await this.end( true );
-
-    return result;
+      throw new PgError( error );
+    }
   }
 }

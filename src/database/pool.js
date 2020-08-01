@@ -1,6 +1,7 @@
 "use strict";
 
 const { Pool } = require( "pg" );
+const PgError = require( "./PgError" );
 
 module.exports = { getPool, testPool };
 
@@ -16,6 +17,16 @@ function getPool( config ){
         .replace( "{REASON}", "can't find configuration" );
 
     pool = new Pool( config[ NODE_ENV ] );
+    pool.query_ = pool.query;
+    pool.query = async ( sql, data ) => {
+      try{
+        const result = await pool.query_( sql, data );
+
+        return result;
+      } catch( e ) {
+        throw new PgError( e );
+      }
+    };
   }
 
   return pool;
@@ -31,9 +42,6 @@ async function testPool(){
   try{
     client = await pool.connect();
   } catch( e ) {
-    await client.end();
-    client.release();
-
     throw errorMessage.replace( "{MODE}", NODE_ENV ).replace( "{REASON}", "can't connect to database" );
   }
 
