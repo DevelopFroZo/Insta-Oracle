@@ -1,21 +1,36 @@
 "use strict";
 
+// Libs
 const fetch = require( "node-fetch" );
-const { getPool } = require( "../../database/pool" );
-const Transaction = require( "../../database/transaction" );
+
+// Helpers
 const sign = require( "../../helpers/sign" );
 
-module.exports = {
-  run
-};
+// Database
+const { getPool } = require( "../../database/pool" );
+const userMedia = require( "../../database/userMedia" );
 
+module.exports = run;
+
+/*
+ * Функция отправляет данные в ODS
+ */
 async function send( body, oracleId, algorithm, secret, encoding ){
   body = JSON.stringify( body );
 
   const signature = sign( body, algorithm, secret, encoding );
 
+  console.debug( `[TASK UPDATE STATUS] Signature for request: ${signature}` );
+
   try{
-    // const response = await fetch( `https://dev.oracle.iterra.world/api/v1/oracle/${oracleId}/activities`, {
+    const {
+      ODS_URL,
+      SEND_ACTIVITIES_URI
+    } = process.env;
+
+    console.log( "[TASK UPDATE STATUS] Send request for send activities" );
+
+    // const response = await fetch( `${ODS_URL}${SEND_ACTIVITIES_URI.replace( "{ORACLE_ID}", oracleId )}`, {
     //   method: "POST",
     //   headers: {
     //     "Content-Type": "application/json",
@@ -23,48 +38,55 @@ async function send( body, oracleId, algorithm, secret, encoding ){
     //   },
     //   body
     // } );
+    // #fix
     const response = { ok: true };
 
     if( !response.ok ){
-      console.log( "[TASK UPDATE STATUS] FAIL TO SEND ACTIVITIES" );
-      console.log( response );
+      console.debug( response );
 
       return false;
     }
   } catch( e ) {
-    console.log( "[TASK UPDATE STATUS] FAIL TO SEND ACTIVITIES (FATAL)" );
-    console.log( e );
+    console.error( e );
+
+    return false;
+  }
+}
+
+/*
+ * Идея -- выделить все записи, у которых status
+ * не NULL. Разделить эти данные на созданные/удалённые
+ * по каждому пользователю (oracle_user_id)
+ * и отправить в ODS
+ */
+async function run(){
+  console.log( "[TASK UPDATE STATUS] Start" );
+
+  const pool = getPool();
+  let media;
+
+  try{
+    console.log( "[TASK UPDATE STATUS] Get media with not null status" );
+    media = await userMedia.getWithNotNullStatus( pool );
+  } catch( e ) {
+    console.error( e );
 
     return false;
   }
 
-  return true;
-}
-
-async function run(){
-  console.log( "[TASK UPDATE STATUS] START" );
-
-  const pool = getPool();
-  const { rows: media } = await pool.query(
-    `select *
-    from user_media
-    where not status is null`
-  );
-
   if( media.length === 0 ){
-    console.log( "[TASK UPDATE STATUS] NO MEDIA TO SEND" );
+    console.log( "[TASK UPDATE STATUS] No media to send" );
 
     return true;
   }
 
-  const {
-    ORACLE_ID: oracleId,
-    HMAC_ALGORITHM: algorithm,
-    HMAC_SECRET: secret,
-    HMAC_SIGNATURE_ENCODING: encoding
-  } = process.env;
-  const exclude = [ "id", "media_type", "status", "oracle_user_id" ];
-
+  /*
+   * Вспомогательная функция для добавления
+   * записи на модификацию (БД) по пользователю
+   * toModify -- ссылка на один из объектов:
+   * * filtered.deleted.toModify
+   * * filtered.other.toModify
+   */
   const q = ( toModify, oracleUserId, oracleActivityId ) => {
     if( !( oracleUserId in toModify ) )
       toModify[ oracleUserId ] = [];
@@ -72,6 +94,7 @@ async function run(){
     toModify[ oracleUserId ].push( oracleActivityId );
   };
 
+  const exclude = [ "id", "media_type", "status", "oracle_user_id" ];
   const filtered = media.reduce( ( res, el ) => {
     const el_ = {
       oracle_activity_id: el.id,
@@ -105,48 +128,56 @@ async function run(){
     }
   } );
 
-  console.log( `[TASK UPDATED STATUS] COUNT OF DELETED MEDIA: ${filtered.deleted.toSend.length}` );
-  console.log( `[TASK UPDATED STATUS] COUNT OF OTHER MEDIA: ${filtered.other.toSend.length}` );
-  console.log( `[TASK UPDATE STATUS] TOTAL COUNT OF MEDIA: ${media.length}` );
+  console.debug( `[TASK UPDATE STATUS] Count of deleted media: ${filtered.deleted.toSend.length}` );
+  console.debug( `[TASK UPDATE STATUS] Count of other media: ${filtered.other.toSend.length}` );
+  console.debug( `[TASK UPDATE STATUS] Total count of media: ${media.length}` );
 
+  const {
+    ORACLE_ID,
+    HMAC_ALGORITHM,
+    HMAC_SECRET,
+    HMAC_SIGNATURE_ENCODING
+  } = process.env;
+
+  /*
+   * В коде ниже, если происходит какая-либо
+   * ошибка при отправке данных в ODS, то
+   * процесс не останавливается. Сделано для
+   * того, чтобы если даже часть данных не
+   * отправится, отправилась другая часть
+   * (попыталась отправиться)
+   */
   if( filtered.deleted.toSend.length > 0 ){
-    console.log( "[TASK UPDATE STATUS] TRY TO SEND DELETED ACTIVITIES" );
+    console.log( "[TASK UPDATE STATUS] Send deleted activities" );
 
-    const result = await send( filtered.deleted.toSend, oracleId, algorithm, secret, encoding );
+    const result = await send( filtered.deleted.toSend, ORACLE_ID, HMAC_ALGORITHM, HMAC_SECRET, HMAC_SIGNATURE_ENCODING );
 
-    if( !result ) return false;
+    if( result !== false ){
+      for( const oracleUserId in filtered.deleted.toModify ) try{
+        console.log( "[TASK UPDTAE STATUS] Modify database" );
+        await userMedia.deleteManyByOracleUserId( pool, oracleUserId, filtered.deleted.toModify[ oracleUserId ] );
+      } catch( e ) {
+        console.error( e );
 
-    console.log( "[TASK UPDATE STATUS] SUCCESS" );
-
-    for( const oracleUserId in filtered.deleted.toModify ) await pool.query(
-      `delete from user_media
-      where
-        oracle_user_id = $1 and
-        id = any( $2 )`,
-      [ oracleUserId, filtered.deleted.toModify[ oracleUserId ] ]
-    );
-
-    console.log( "[TASK UPDATE STATUS] DATABASE MODIFIED SUCCESSFULLY" );
+        return false;
+      }
+    }
   }
 
   if( filtered.other.toSend.length > 0 ){
-    console.log( "[TASK UPDATE STATUS] TRY TO SEND NON DELETED ACTIVITIES" );
+    console.log( "[TASK UPDATE STATUS] Send non deleted activities" );
 
-    const result = await send( filtered.other.toSend, oracleId, algorithm, secret, encoding );
+    const result = await send( filtered.other.toSend, ORACLE_ID, HMAC_ALGORITHM, HMAC_SECRET, HMAC_SIGNATURE_ENCODING );
 
-    if( !result ) return false;
+    if( result !== false ){
+      for( const oracleUserId in filtered.other.toModify ) try{
+        console.log( "[TASK UPDTAE STATUS] Modify database" );
+        await userMedia.setManyStatusesToNullByOracleUserId( pool, oracleUserId, filtered.other.toModify[ oracleUserId ] );
+      } catch( e ) {
+        console.error( e );
 
-    console.log( "[TASK UPDATE STATUS] SUCCESS" );
-
-    for( const oracleUserId in filtered.other.toModify ) await pool.query(
-      `update user_media
-      set status = null
-      where
-        oracle_user_id = $1 and
-        id = any( $2 )`,
-      [ oracleUserId, filtered.other.toModify[ oracleUserId ] ]
-    );
-
-    console.log( "[TASK UPDATE STATUS] DATABASE MODIFIED SUCCESSFULLY" );
+        return false;
+      }
+    }
   }
 }

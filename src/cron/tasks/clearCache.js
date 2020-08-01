@@ -1,15 +1,18 @@
 "use strict";
 
+// Database
 const { getPool } = require( "../../database/pool" );
+const cache = require( "../../database/cache" );
 
-module.exports = {
-  run
-};
+module.exports = run;
 
 async function run(){
-  await getPool().query(
-    `delete from cache
-    where expires_at <= $1`,
-    [ Math.floor( Date.now() / 1000 ) ]
-  );
+  try{
+    console.log( "[TASK CLEAR CACHE] Clear cache" );
+    await cache.clearExpires( getPool(), Math.floor( Date.now() / 1000 ) );
+  } catch( e ) {
+    console.error( e );
+
+    return false;
+  }
 }
