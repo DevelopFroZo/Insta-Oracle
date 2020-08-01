@@ -8,6 +8,12 @@ module.exports = { init, get };
 
 async function init( driver ){
   if( !cron ){
+    const {
+      CRON_UPDATE_DELAY,
+      CRON_UPDATE_LIMIT,
+      CRON_CLEAR_CACHE_PERIOD,
+      CRON_UPDATE_STATUS_PERIOD
+    } = process.env;
     /*const c = await getPool().connect();
 
     await c.query( "begin" );
@@ -19,19 +25,21 @@ async function init( driver ){
     await c.query( "commit" );
     await c.end();
     c.release();*/
-    cron = new Cron( driver );
+    cron = new Cron( driver, {
+      updateDelay: parseInt( CRON_UPDATE_DELAY ),
+      updateLimit: parseInt( CRON_UPDATE_LIMIT )
+    } );
+    await cron.start();
     /*await cron.add( "clearCache", { settings: {
-      success: { timeModifierSettings: [ "basic", 24 * 60 * 60 ] },
-      error: { timeModifierSettings: [ "basic", 24 * 60 * 60 ] },
+      success: { timeModifierSettings: [ "basic", CRON_CLEAR_CACHE_PERIOD ] },
+      error: { timeModifierSettings: [ "basic", CRON_CLEAR_CACHE_PERIOD ] },
       onExpires: "update"
     } } );
     await cron.add( "updateStatus", { settings: {
-      // #fix вернуть время на 1 час
-      success: { timeModifierSettings: [ "basic", 5 * 60 ] },
-      error: { timeModifierSettings: [ "basic", 5 * 60 ] },
+      success: { timeModifierSettings: [ "basic", CRON_UPDATE_STATUS_PERIOD ] },
+      error: { timeModifierSettings: [ "basic", CRON_UPDATE_STATUS_PERIOD ] },
       onExpires: "update"
     } } );*/
-    cron.start();
   }
 }
 
