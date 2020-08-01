@@ -1,24 +1,45 @@
 "use strict";
 
+/*
+ * CRON не зависит от базы данных,
+ * поэтому пишется некий "драйвер",
+ * который отвечает за действия,
+ * которые нужны, чтобы демон
+ * получил необходимые данные из БД
+ */
+
+const Transaction = require( "../../database/transaction" );
+
 module.exports = index;
 
+/*
+ * isFirst -- если он будет указан как true,
+ * а такое произойдёт только при старте
+ * демона, то Pomise зарезолвится с
+ * задачами, статус которых отличен от
+ * "await"
+ * Данное действие необходимо, чтобы
+ * при выключении демона на долгое время,
+ * либо при падении БД, либо при
+ * непредвиденной ошибке восстановить
+ * систему и выполнить/удалить/обновить
+ * все задачи
+ */
 async function grab( pool, table, timestamp, isFirst = false ){
-  const client = await pool.connect();
+  const client = new Transaction( pool );
 
-  await client.query( "begin" );
-
-  let { rows: tasks } = await client.query(
+  const { rows: tasks } = await client.query(
     `update ${table}
     set status = 'process'
     where
       timestamp <= $1
       ${!isFirst ? "and status = 'await'" : ""}
-    returning id, type, timestamp, settings, params, success_runs, error_runs`,
+    returning *`,
     [ timestamp ]
   );
 
-  let { rows: [ { timestamp: timestamp_ } ] } = await client.query(
-    `select min( timestamp ) as timestamp
+  let { rows: [ { timestamp_ } ] } = await client.query(
+    `select min( timestamp ) as timestamp_
     from ${table}
     where
     	timestamp > $1 and
@@ -26,29 +47,23 @@ async function grab( pool, table, timestamp, isFirst = false ){
     [ timestamp ]
   );
 
-  await client.query( "commit" );
   await client.end();
-  client.release();
 
-  tasks = tasks.map( task => {
+  for( const task of tasks )
     task.timestamp = parseInt( task.timestamp );
-
-    return task;
-  } );
 
   timestamp_ = timestamp_ ? parseInt( timestamp_ ) : null;
 
   return [ tasks, timestamp_ ];
 }
 
-function del( pool, table, ids ){
-  return pool.query(
-    `delete from ${table}
-    where id = any( $1 )`,
-    [ ids ]
-  );
-}
-
+/*
+ * runFields -- в этом параметре передаётся массив
+ * массивов вида [ [ field, value ], [ ... ], ... ].
+ * Если у задачи в settings.isDrop указано true,
+ * то при успешном запуске задачи неуспешные запуски
+ * будут сброшены в 0 и наоборот
+ */
 function update( pool, table, id, timestamp, runFields ){
   const sets = [ "timestamp = $1", "status = 'await'" ];
   const params = [ timestamp, id ];
@@ -67,8 +82,20 @@ function update( pool, table, id, timestamp, runFields ){
   );
 }
 
-async function add( pool, table, type, timestamp, settings, params ){
-  const { rows: [ { id } ] } = await pool.query(
+function del( client, table, ids ){
+  return client.query(
+    `delete from ${table}
+    where id = any( $1 )`,
+    [ ids ]
+  );
+}
+
+/*
+ * settings -- настройки выполнения задачи (JSON)
+ * params -- переданные параметры задачи (JSON)
+ */
+async function add( client, table, type, timestamp, settings, params ){
+  const { rows: [ { id } ] } = await client.query(
     `insert into ${table}( type, timestamp, settings, params )
     values( $1, $2, $3, $4 )
     returning id`,
@@ -83,10 +110,10 @@ function index( pool, table ){
     table = "tasks";
 
   return {
-    grab: timestamp => grab( pool, table, timestamp ),
     grabFirst: timestamp => grab( pool, table, timestamp, true ),
-    delete: ids => del( pool, table, ids ),
     update: ( id, timestamp, runFields ) => update( pool, table, id, timestamp, runFields ),
-    add: ( type, timestamp, settings, params ) => add( pool, table, type, timestamp, settings, params )
+    delete: ( ids, client ) => del( client || pool, table, ids ),
+    grab: timestamp => grab( pool, table, timestamp ),
+    add: ( type, timestamp, settings, params, client ) => add( client || pool, table, type, timestamp, settings, params )
   };
 }
