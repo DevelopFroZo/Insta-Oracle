@@ -150,17 +150,17 @@ async function run( { oracleUserId }, cron ){
           console.debug( `[TASK SCRAP] Data for request. Signature: ${signature}, body: ${body}` );
           console.log( "[TASK SCRAP] Send request for unbind" );
 
-          const response = await fetch( `${ODS_URL}${UNBIND_URI.replace( "{ORACLE_ID}", ORACLE_ID )}`, {
-            method: "DELETE",
-            headers: {
-              "Accept": "application/json",
-              "Content-Type": "application/json",
-              "Signature": signature
-            },
-            body
-          } );
+          // const response = await fetch( `${ODS_URL}${UNBIND_URI.replace( "{ORACLE_ID}", ORACLE_ID )}`, {
+          //   method: "DELETE",
+          //   headers: {
+          //     "Accept": "application/json",
+          //     "Content-Type": "application/json",
+          //     "Signature": signature
+          //   },
+          //   body
+          // } );
           // #fix
-          // const response = { ok: true };
+          const response = { ok: true };
 
           if( !response.ok ){
             console.debug( response );
