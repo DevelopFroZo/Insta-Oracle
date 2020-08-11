@@ -47,6 +47,8 @@ class Cron{
     let fn;
     let fnRuns = 0;
 
+    runs++;
+
     if( limitValue === -1 || runs < limitValue || ( runs === limitValue && link.limit.action === "restart" ) ){
       const runFields = [];
       let timeModifierSettings;
@@ -57,7 +59,6 @@ class Cron{
       }
       else{
         timeModifierSettings = link.timeModifierSettings;
-        runs++;
       }
 
       const timeModifier = timeModifiers[ timeModifierSettings[0] ];
